@@ -1,0 +1,20 @@
+services:
+  scraper:
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - ./output:/app/output
+    command: ["scrapy", "crawl", "generic", "-a", "site=quotes"]
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./sql:/docker-entrypoint-initdb.d
+
+volumes:
+  clickhouse_data:

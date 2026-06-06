@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 from urllib.parse import quote
 
-from scrapy import Request, Spider
+from scrapy import Request
 
 
 def build_brightdata_proxy_url(
@@ -71,7 +71,7 @@ class BrightDataProxyMiddleware:
             country=country,
         )
 
-    def process_request(self, request: Request, spider: Spider | None = None):
+    def process_request(self, request: Request):
         if request.meta.get("proxy"):
             return None
 
@@ -82,6 +82,8 @@ class BrightDataProxyMiddleware:
         request.meta["proxy"] = proxy_url
         if "@" in proxy_url:
             credentials, _ = proxy_url.split("@", 1)
-            encoded = base64.b64encode(credentials.replace("http://", "").encode()).decode()
+            encoded = base64.b64encode(
+                credentials.replace("http://", "").encode()
+            ).decode()
             request.headers[b"Proxy-Authorization"] = f"Basic {encoded}".encode()
         return None

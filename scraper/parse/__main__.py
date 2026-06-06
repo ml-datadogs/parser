@@ -8,10 +8,18 @@ from scraper.sites.registry import list_sites
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Parse raw ClickHouse rows into parsed_items.")
-    parser.add_argument("--site", required=True, help=f"Site name. Available: {', '.join(list_sites())}")
-    parser.add_argument("--reset", action="store_true", help="Reprocess from the beginning.")
-    parser.add_argument("--since", help="Reprocess rows fetched after this ISO datetime.")
+    parser = argparse.ArgumentParser(
+        description="Parse raw ClickHouse rows into parsed_items."
+    )
+    parser.add_argument(
+        "--site", required=True, help=f"Site name. Available: {', '.join(list_sites())}"
+    )
+    parser.add_argument(
+        "--reset", action="store_true", help="Reprocess from the beginning."
+    )
+    parser.add_argument(
+        "--since", help="Reprocess rows fetched after this ISO datetime."
+    )
     parser.add_argument("--batch-size", type=int, help="Rows to read per batch.")
     args = parser.parse_args()
 

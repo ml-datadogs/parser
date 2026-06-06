@@ -21,6 +21,9 @@ def _get_client(settings: dict[str, Any]):
 def _load_settings_from_env() -> dict[str, Any]:
     import os
 
+    from dotenv import load_dotenv
+
+    load_dotenv()
     host = os.getenv("CLICKHOUSE_HOST", "")
     if not host:
         raise RuntimeError("CLICKHOUSE_HOST is required for the parse worker.")
@@ -62,7 +65,13 @@ def get_watermark(client, state_table: str, spider: str) -> datetime:
 def set_watermark(client, state_table: str, spider: str, watermark: datetime) -> None:
     client.insert(
         state_table,
-        [[spider, watermark.replace(tzinfo=None), datetime.now(timezone.utc).replace(tzinfo=None)]],
+        [
+            [
+                spider,
+                watermark.replace(tzinfo=None),
+                datetime.now(timezone.utc).replace(tzinfo=None),
+            ]
+        ],
         column_names=["spider", "watermark", "updated_at"],
     )
 
@@ -90,7 +99,9 @@ def fetch_raw_batch(
     )
     rows: list[dict[str, Any]] = []
     for url, body, fetched_at in result.result_rows:
-        rows.append({"url": url, "body": body, "fetched_at": _parse_datetime(fetched_at)})
+        rows.append(
+            {"url": url, "body": body, "fetched_at": _parse_datetime(fetched_at)}
+        )
     return rows
 
 

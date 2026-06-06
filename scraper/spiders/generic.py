@@ -15,7 +15,9 @@ class GenericSiteSpider(CrawlSpider, BaseSpider):
 
     def __init__(self, site: str | None = None, *args, **kwargs):
         if not site:
-            raise ValueError("Pass -a site=<name>, e.g. scrapy crawl generic -a site=quotes")
+            raise ValueError(
+                "Pass -a site=<name>, e.g. scrapy crawl generic -a site=quotes"
+            )
         site_pkg = get_site(site)
         self.site_config = site_pkg.config
         self.site_name = site
@@ -42,7 +44,9 @@ class GenericSiteSpider(CrawlSpider, BaseSpider):
     def start_requests(self):
         proxy_meta = self.site_config.proxy_meta()
         for url in self.site_config.start_urls:
-            yield scrapy.Request(url, callback=self.parse_start_url, meta=dict(proxy_meta))
+            yield scrapy.Request(
+                url, callback=self.parse_start_url, meta=dict(proxy_meta)
+            )
 
     def parse_start_url(self, response):
         yield from self.parse_item(response)

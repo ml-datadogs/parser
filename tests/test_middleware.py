@@ -18,7 +18,7 @@ def test_build_brightdata_proxy_url_with_country():
 def test_middleware_noop_without_credentials():
     middleware = BrightDataProxyMiddleware(customer="", zone="", password="")
     request = Request("https://example.com")
-    assert middleware.process_request(request, spider=None) is None
+    assert middleware.process_request(request) is None
     assert "proxy" not in request.meta
 
 
@@ -29,7 +29,7 @@ def test_middleware_sets_proxy_with_credentials():
         password="secret",
     )
     request = Request("https://example.com")
-    middleware.process_request(request, spider=None)
+    middleware.process_request(request)
     assert "proxy" in request.meta
     assert "brd.superproxy.io" in request.meta["proxy"]
 
@@ -41,5 +41,5 @@ def test_middleware_honors_per_request_country():
         password="secret",
     )
     request = Request("https://example.com", meta={"bd_country": "de"})
-    middleware.process_request(request, spider=None)
+    middleware.process_request(request)
     assert "country-de" in request.meta["proxy"]

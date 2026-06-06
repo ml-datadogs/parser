@@ -25,6 +25,7 @@ class SiteConfig:
     download_delay: float | None = None
     concurrent_requests: int | None = None
     robots_txt_obey: bool = True
+    user_agent: str | None = None
 
     def custom_settings(self) -> dict[str, Any]:
         settings: dict[str, Any] = {}
@@ -32,6 +33,8 @@ class SiteConfig:
             settings["DOWNLOAD_DELAY"] = self.download_delay
         if self.concurrent_requests is not None:
             settings["CONCURRENT_REQUESTS"] = self.concurrent_requests
+        if self.user_agent is not None:
+            settings["USER_AGENT"] = self.user_agent
         settings["ROBOTSTXT_OBEY"] = self.robots_txt_obey
         return settings
 

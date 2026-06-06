@@ -16,8 +16,12 @@ def parse(body: bytes | str, url: str) -> list[dict]:
             {
                 "title": book.css("h3 a::attr(title)").get(default="").strip(),
                 "price": book.css("p.price_color::text").get(default="").strip(),
-                "availability": book.css("p.instock.availability::text").re_first(r"\S+"),
-                "rating": book.css("p.star-rating::attr(class)").re_first(r"star-rating (\w+)"),
+                "availability": book.css("p.instock.availability::text").re_first(
+                    r"\S+"
+                ),
+                "rating": book.css("p.star-rating::attr(class)").re_first(
+                    r"star-rating (\w+)"
+                ),
                 "source_url": url,
             }
         )

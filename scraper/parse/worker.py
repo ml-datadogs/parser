@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
 from scraper.sites.registry import get_site
+
+logger = logging.getLogger("scraper.parse")
 
 
 def _get_client(settings: dict[str, Any]):
@@ -155,6 +158,16 @@ def run_parse_worker(
 
     effective_batch = batch_size or settings["batch_size"]
     total_parsed = 0
+    total_rows = 0
+    batch_no = 0
+
+    logger.info(
+        "parse start: site=%r watermark=%s batch_size=%d reset=%s",
+        site,
+        watermark.isoformat(),
+        effective_batch,
+        reset,
+    )
 
     while True:
         batch = fetch_raw_batch(
@@ -165,8 +178,11 @@ def run_parse_worker(
             effective_batch,
         )
         if not batch:
+            logger.debug("no more rows after watermark=%s", watermark.isoformat())
             break
 
+        batch_no += 1
+        batch_parsed = 0
         max_fetched_at = watermark
         for row in batch:
             records = site_pkg.parse(row["body"], row["url"])
@@ -178,15 +194,30 @@ def run_parse_worker(
                 row["fetched_at"],
                 records,
             )
-            total_parsed += len(records)
+            batch_parsed += len(records)
+            logger.debug("parsed %d records from %s", len(records), row["url"])
             if row["fetched_at"] > max_fetched_at:
                 max_fetched_at = row["fetched_at"]
 
+        total_parsed += batch_parsed
+        total_rows += len(batch)
         watermark = max_fetched_at
         set_watermark(client, settings["state_table"], site, watermark)
+        logger.info(
+            "batch %d: rows=%d parsed=%d watermark=%s (totals rows=%d parsed=%d)",
+            batch_no,
+            len(batch),
+            batch_parsed,
+            watermark.isoformat(),
+            total_rows,
+            total_parsed,
+        )
 
         if len(batch) < effective_batch:
             break
 
     client.close()
+    logger.info(
+        "parse done: site=%r rows=%d records=%d", site, total_rows, total_parsed
+    )
     return total_parsed

@@ -91,6 +91,53 @@ def test_litfund_parses_catalog_pages(page: str):
     assert all(item["title"] for item in items)
 
 
+def test_litfund_parses_completed_auction():
+    site = get_site("litfund")
+    records = site.parse(
+        _litfund_fixture("auction_completed.html"),
+        "https://www.litfund.ru/auction/747/",
+    )
+
+    auction = records[0]
+    assert auction["type"] == "auction"
+    assert auction["auction_id"] == "747"
+    assert auction["number"] == "747"
+    assert auction["status"] == "completed"
+    assert auction["title"]
+
+    items = [r for r in records if r["type"] == "item"]
+    assert len(items) == 36
+    assert all(item["auction_id"] == "747" for item in items)
+    assert all(item["final_price"] for item in items)
+    assert all(isinstance(item["reserve_not_met"], bool) for item in items)
+    assert any(item["reserve_not_met"] for item in items)
+    assert any(not item["reserve_not_met"] for item in items)
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        "auction_completed_p2",
+        "auction_completed_p3",
+        "auction_completed_p4",
+        "auction_completed_p5",
+    ],
+)
+def test_litfund_parses_completed_catalog_pages(page: str):
+    site = get_site("litfund")
+    records = site.parse(
+        _litfund_fixture(f"{page}.html"),
+        f"https://www.litfund.ru/auction/747/?page={page.split('_p')[-1]}",
+    )
+
+    items = [r for r in records if r["type"] == "item"]
+    assert len(items) > 0
+    assert all(item["auction_id"] == "747" for item in items)
+    assert all(item["lot_number"] for item in items)
+    assert all(item["final_price"] for item in items)
+    assert all("reserve_not_met" in item for item in items)
+
+
 def test_litfund_parses_item():
     site = get_site("litfund")
     records = site.parse(

@@ -74,6 +74,38 @@ def _parse_lot(
     return record
 
 
+def _parse_card_prices(card: Selector) -> dict[str, Any]:
+    """Extract the price rows from a lot card.
+
+    The price block is a flat sequence of alternating label/value divs. Which
+    rows are present depends on auction state: active lots expose a "Лидирующая
+    ставка" (leading bid), completed lots a "Финальная ставка" (final price)
+    that may carry an "НДР" badge meaning the bid did not reach the reserve.
+    Pairing by label text is more robust than the per-state CSS classes.
+    """
+    result: dict[str, Any] = {}
+    rows = card.css(".tm-product-card-prices > div")
+    index = 0
+    while index < len(rows):
+        row = rows[index]
+        if "uk-text-meta" not in (row.attrib.get("class", "")):
+            index += 1
+            continue
+        label = _to_text(" ".join(row.css("::text").getall()))
+        value = ""
+        if index + 1 < len(rows):
+            value = _to_text(" ".join(rows[index + 1].css("::text").getall()))
+        if label.startswith("Стартовая"):
+            result["start_price"] = value
+        elif label.startswith("Лидирующая"):
+            result["leading_bid"] = value
+        elif label.startswith("Финальная"):
+            result["final_price"] = value
+            result["reserve_not_met"] = bool(row.css(".tm-product-card-ndr"))
+        index += 2
+    return result
+
+
 def _parse_lot_card(
     card: Selector, auction_id: str | None, page_url: str
 ) -> dict[str, Any] | None:
@@ -85,12 +117,7 @@ def _parse_lot_card(
 
     title = _to_text(card.css("h3.tm-product-card-title a::text").get())
     lot_index = _to_text(card.css(".uk-text-meta.uk-margin-xsmall-bottom::text").get())
-    start_price = _to_text(
-        card.css("div.tm-product-card-price:not(.tm-price-value)::text").get()
-    )
-    leading_bid = _to_text(
-        card.css(".tm-price-value.tm-product-card-price::text").get()
-    )
+    prices = _parse_card_prices(card)
     views = _to_text(card.css('[data-type="lot-views-cnt"]::text').get())
     images = card.css("figure.tm-media-box-wrap img::attr(src)").getall()
 
@@ -100,13 +127,16 @@ def _parse_lot_card(
         "lot_number": lot_number,
         "lot_index": lot_index,
         "title": title,
-        "start_price": start_price,
+        "start_price": prices.get("start_price", ""),
         "views": views,
         "images": images,
         "source_url": lot_url or page_url,
     }
-    if leading_bid:
-        record["leading_bid"] = leading_bid
+    if "leading_bid" in prices:
+        record["leading_bid"] = prices["leading_bid"]
+    if "final_price" in prices:
+        record["final_price"] = prices["final_price"]
+        record["reserve_not_met"] = prices["reserve_not_met"]
     return record
 
 

@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import logging
+import os
 
 from scraper.ingest.worker import run_ingest
 from scraper.sites.registry import list_sites
+
+
+def _configure_logging() -> None:
+    logging.basicConfig(
+        level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
 
 def main() -> None:
@@ -21,6 +30,7 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, help="Rows to insert per batch.")
     args = parser.parse_args()
 
+    _configure_logging()
     total = run_ingest(args.site, input_path=args.input, batch_size=args.batch_size)
     print(f"Loaded {total} raw rows into ClickHouse for site={args.site!r}.")
 

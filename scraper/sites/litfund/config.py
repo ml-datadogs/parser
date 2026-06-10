@@ -16,7 +16,12 @@ config = SiteConfig(
             r"/auction/\d+(?:[.s]\d+)?/\?page=\d+",
         ),
     ),
-    download_delay=1.0,
+    # Throughput is bounded by this single domain, so the per-domain limit is
+    # the real politeness cap; autothrottle backs off if litfund slows down.
+    download_delay=0.25,
+    concurrent_requests_per_domain=8,
+    autothrottle_target_concurrency=8.0,
+    autothrottle_start_delay=0.25,
     proxy_country="ru",
     # litfund cloaks/404s non-browser User-Agents (e.g. the default bot UA),
     # especially from datacenter IPs, so present a real browser UA.

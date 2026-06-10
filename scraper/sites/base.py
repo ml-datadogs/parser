@@ -24,6 +24,9 @@ class SiteConfig:
     proxy_country: str | None = None
     download_delay: float | None = None
     concurrent_requests: int | None = None
+    concurrent_requests_per_domain: int | None = None
+    autothrottle_target_concurrency: float | None = None
+    autothrottle_start_delay: float | None = None
     robots_txt_obey: bool = True
     user_agent: str | None = None
 
@@ -33,6 +36,16 @@ class SiteConfig:
             settings["DOWNLOAD_DELAY"] = self.download_delay
         if self.concurrent_requests is not None:
             settings["CONCURRENT_REQUESTS"] = self.concurrent_requests
+        if self.concurrent_requests_per_domain is not None:
+            settings["CONCURRENT_REQUESTS_PER_DOMAIN"] = (
+                self.concurrent_requests_per_domain
+            )
+        if self.autothrottle_target_concurrency is not None:
+            settings["AUTOTHROTTLE_TARGET_CONCURRENCY"] = (
+                self.autothrottle_target_concurrency
+            )
+        if self.autothrottle_start_delay is not None:
+            settings["AUTOTHROTTLE_START_DELAY"] = self.autothrottle_start_delay
         if self.user_agent is not None:
             settings["USER_AGENT"] = self.user_agent
         settings["ROBOTSTXT_OBEY"] = self.robots_txt_obey

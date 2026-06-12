@@ -8,6 +8,7 @@ import requests
 from dotenv import load_dotenv
 
 from scraper.capture.__main__ import _build_proxy_url
+from scraper.middlewares import build_unlocker_request
 from scraper.parse.worker import _get_client, _load_settings_from_env, run_parse_worker
 from scraper.sites.litfund.discover import extract_auction_ids
 from scraper.sites.registry import get_site
@@ -26,14 +27,34 @@ def _configure_logging() -> None:
 
 
 def _fetch(url: str) -> str:
-    """Fetch a litfund page through Bright Data (if configured) with a browser UA."""
+    """Fetch a litfund page, preferring the Web Unlocker over the residential proxy.
+
+    litfund cloaks the residential pool with 404s on valid pages (the very
+    reason the crawl spider routes through the Web Unlocker). Discovery must use
+    the same path, or it 404s on the archive. When ``BRIGHTDATA_API_TOKEN`` and
+    the site's ``unlocker_zone`` are set, go through the Unlocker API; otherwise
+    fall back to the residential proxy.
+    """
+    config = get_site(SITE).config
+    api_token = os.getenv("BRIGHTDATA_API_TOKEN", "")
+    zone = getattr(config, "unlocker_zone", None)
+    if api_token and zone:
+        api_url = os.getenv(
+            "BRIGHTDATA_API_URL", "https://api.brightdata.com/request"
+        )
+        payload, headers = build_unlocker_request(
+            api_token=api_token, zone=zone, target_url=url
+        )
+        response = requests.post(api_url, json=payload, headers=headers, timeout=60)
+        response.raise_for_status()
+        return response.text
+
     proxy_url = _build_proxy_url(SITE)
     proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
 
     headers = {}
-    user_agent = get_site(SITE).config.user_agent
-    if user_agent:
-        headers["User-Agent"] = user_agent
+    if config.user_agent:
+        headers["User-Agent"] = config.user_agent
 
     verify_ssl = os.getenv("BRIGHTDATA_VERIFY_SSL", "false").lower() in {
         "1",
@@ -73,21 +94,32 @@ def discover_latest(n: int, *, max_pages: int = 10) -> list[str]:
     return ordered[:n]
 
 
-def _completed_auction_ids() -> set[str] | None:
-    """Auction ids already stored as completed for litfund, or None if no DB."""
+def _stored_auction_ids(*, completed_only: bool) -> set[str] | None:
+    """Auction ids already stored for litfund, or None if no DB is configured.
+
+    When ``completed_only`` is True, only auctions stored as ``completed`` are
+    returned (the default skip set, so ``upcoming`` auctions get re-crawled to
+    fill final prices). When False, every auction already present in
+    ``parsed_items`` is returned, regardless of status.
+    """
     if not os.getenv("CLICKHOUSE_HOST", ""):
         return None
 
     settings = _load_settings_from_env()
     client = _get_client(settings)
     try:
+        status_filter = (
+            "AND JSONExtractString(toString(fields), 'status') = 'completed'"
+            if completed_only
+            else ""
+        )
         result = client.query(
             f"""
             SELECT DISTINCT JSONExtractString(toString(fields), 'auction_id')
             FROM {settings["parsed_table"]}
             WHERE spider = 'litfund'
               AND JSONExtractString(toString(fields), 'type') = 'auction'
-              AND JSONExtractString(toString(fields), 'status') = 'completed'
+              {status_filter}
             """
         )
         return {row[0] for row in result.result_rows if row[0]}
@@ -144,6 +176,14 @@ def main() -> None:
         help="Re-fetch lot pages already stored in ClickHouse (default: skip them).",
     )
     parser.add_argument(
+        "--skip-existing-auctions",
+        action="store_true",
+        help=(
+            "Skip every auction already present in ClickHouse, not just those "
+            "stored as completed (so upcoming auctions are not re-crawled)."
+        ),
+    )
+    parser.add_argument(
         "--max-pages",
         type=int,
         default=10,
@@ -167,24 +207,25 @@ def main() -> None:
         logger.warning("no auctions discovered from the archive; nothing to do.")
         return
 
-    completed = _completed_auction_ids()
-    if completed is None:
+    stored = _stored_auction_ids(completed_only=not args.skip_existing_auctions)
+    if stored is None:
         logger.warning(
             "CLICKHOUSE_HOST is not set; cannot determine already-parsed auctions, "
             "so all discovered auctions will be crawled and the parse step skipped."
         )
         to_crawl = candidates
     else:
-        skipped = [a for a in candidates if a in completed]
+        skipped = [a for a in candidates if a in stored]
         logger.info(
-            "already completed in DB, skipping (%d): %s",
+            "already in DB (%s), skipping (%d): %s",
+            "any status" if args.skip_existing_auctions else "completed",
             len(skipped),
             ", ".join(skipped) or "(none)",
         )
-        to_crawl = [a for a in candidates if a not in completed]
+        to_crawl = [a for a in candidates if a not in stored]
 
     if not to_crawl:
-        logger.info("all discovered auctions are already completed; nothing to crawl.")
+        logger.info("all discovered auctions are already in DB; nothing to crawl.")
         return
 
     logger.info("crawling %d auctions: %s", len(to_crawl), ", ".join(to_crawl))
@@ -200,7 +241,7 @@ def main() -> None:
     if args.no_parse:
         logger.info("crawl done; --no-parse set, skipping the parse worker.")
         return
-    if completed is None:
+    if stored is None:
         logger.info("crawl done; parse skipped because ClickHouse is not configured.")
         return
 

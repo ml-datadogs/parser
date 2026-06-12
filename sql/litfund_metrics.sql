@@ -16,7 +16,13 @@ WITH auctions AS
 (
     SELECT
         JSONExtractString(toString(fields), 'auction_id') AS auction_id,
-        argMax(JSONExtractString(toString(fields), 'status'), parsed_at) AS status
+        -- "completed" is sticky: a later degenerate/blocked parse (e.g.
+        -- "upcoming"/"unknown") must not shadow a known-completed auction.
+        if(
+            max(JSONExtractString(toString(fields), 'status') = 'completed'),
+            'completed',
+            argMax(JSONExtractString(toString(fields), 'status'), parsed_at)
+        ) AS status
     FROM scraper.parsed_items
     WHERE spider = 'litfund'
       AND JSONExtractString(toString(fields), 'type') = 'auction'
@@ -67,8 +73,20 @@ WITH auctions AS
 (
     SELECT
         JSONExtractString(toString(fields), 'auction_id') AS auction_id,
-        argMax(JSONExtractString(toString(fields), 'status'), parsed_at)   AS status,
-        argMax(JSONExtractString(toString(fields), 'date_iso'), parsed_at) AS date_iso,
+        -- "completed" is sticky: a later degenerate/blocked parse (e.g.
+        -- "upcoming"/"unknown") must not shadow a known-completed auction.
+        if(
+            max(JSONExtractString(toString(fields), 'status') = 'completed'),
+            'completed',
+            argMax(JSONExtractString(toString(fields), 'status'), parsed_at)
+        ) AS status,
+        -- Prefer the latest non-empty date so a phantom empty-date record does
+        -- not blank out a real auction date.
+        argMaxIf(
+            JSONExtractString(toString(fields), 'date_iso'),
+            parsed_at,
+            JSONExtractString(toString(fields), 'date_iso') != ''
+        ) AS date_iso,
         max(parsed_at) AS last_parsed_at
     FROM scraper.parsed_items
     WHERE spider = 'litfund'

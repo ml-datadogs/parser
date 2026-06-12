@@ -191,21 +191,23 @@ def _parse_auction(
             date = _to_text(" ".join(header_smalls[1].css("::text").getall()))
 
     page_text = " ".join(selector.css("::text").getall())
-    if "Аукцион завершён" in page_text:
+    completed = "Аукцион завершён" in page_text
+    # Scope the countdown to THIS auction's own label (``lf-<id>-t-to-start``).
+    # The page also renders a "Ближайшие аукционы" block listing other
+    # auctions' countdowns, so a page-wide match would pick the soonest one
+    # (e.g. "Завтра") instead of the auction we're parsing.
+    countdown = _to_text(
+        selector.css(f'[data-online="lf-{auction_id}-t-to-start"]::text').get()
+    )
+    if completed:
         status = "completed"
+    elif countdown:
+        status = countdown
     else:
-        # Scope the countdown to THIS auction's own label (``lf-<id>-t-to-start``).
-        # The page also renders a "Ближайшие аукционы" block listing other
-        # auctions' countdowns, so a page-wide match would pick the soonest one
-        # (e.g. "Завтра") instead of the auction we're parsing.
-        status = (
-            _to_text(
-                selector.css(
-                    f'[data-online="lf-{auction_id}-t-to-start"]::text'
-                ).get()
-            )
-            or "upcoming"
-        )
+        # No positive signal: a blocked/partial 200 page would otherwise be
+        # mislabeled "upcoming" and, via argMax(parsed_at), shadow the real
+        # "completed" status of a previously parsed good fetch.
+        status = "unknown"
 
     title = _to_text(selector.css("section h4::text").get())
     if not title:
@@ -247,8 +249,23 @@ def parse(body: bytes | str, url: str) -> list[dict]:
     if lot_number is not None:
         return [_parse_lot(selector, auction_id, lot_number, url)]
 
-    records: list[dict] = [_parse_auction(selector, auction_id, url)]
-    for card in selector.css("article.tm-product-card"):
+    cards = selector.css("article.tm-product-card")
+    auction = _parse_auction(selector, auction_id, url)
+
+    # Guard against degenerate/blocked 200 pages (no auction header, no status
+    # label, no lot cards): emitting an auction record there produces a phantom
+    # row with empty number/date that pollutes the parsed stream.
+    looks_like_auction = bool(
+        auction["number"]
+        or auction["date"]
+        or auction["status"] != "unknown"
+        or cards
+    )
+    if not looks_like_auction:
+        return []
+
+    records: list[dict] = [auction]
+    for card in cards:
         item = _parse_lot_card(card, auction_id, url)
         if item is not None:
             records.append(item)

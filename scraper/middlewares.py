@@ -29,6 +29,28 @@ def build_brightdata_proxy_url(
     return f"http://{quote(username, safe='')}:{quote(password, safe='')}@{host}:{port}"
 
 
+def build_unlocker_request(
+    *,
+    api_token: str,
+    zone: str,
+    target_url: str,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Build the JSON payload and headers for a Bright Data Web Unlocker call.
+
+    Shared by ``BrightDataUnlockerMiddleware`` (Scrapy) and the standalone
+    ``requests``-based fetchers (e.g. litfund archive discovery) so both speak
+    to the Unlocker identically. Only zone/url/format are sent: the zone is
+    geo-configured server-side and passing a "country" override makes the API
+    return an empty body.
+    """
+    payload = {"zone": zone, "url": target_url, "format": "raw"}
+    headers = {
+        "Authorization": f"Bearer {api_token}",
+        "Content-Type": "application/json",
+    }
+    return payload, headers
+
+
 class BrightDataProxyMiddleware:
     """Inject Bright Data super-proxy into every request when configured."""
 
@@ -165,18 +187,15 @@ class BrightDataUnlockerMiddleware:
         if not zone:
             return None
 
-        # Only zone/url/format: the Unlocker zone is geo-configured server-side,
-        # and passing a "country" override makes the API return an empty body.
-        payload = {"zone": zone, "url": request.url, "format": "raw"}
+        payload, headers = build_unlocker_request(
+            api_token=self.api_token, zone=zone, target_url=request.url
+        )
 
         return request.replace(
             url=self.api_url,
             method="POST",
             body=json.dumps(payload),
-            headers={
-                "Authorization": f"Bearer {self.api_token}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
             # The API host is off the site's allowed_domains and dedup would
             # collapse same-body requests, so opt out of both filters here.
             dont_filter=True,

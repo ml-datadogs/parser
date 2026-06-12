@@ -133,6 +133,53 @@ def test_litfund_upcoming_status_ignores_recommendations_block():
     assert auction["status"] != "Завтра"
 
 
+def test_litfund_skips_degenerate_blocked_page():
+    # A blocked/partial 200 page lacks the auction header, the "Аукцион
+    # завершён" label and any lot cards. The parser must not invent a phantom
+    # "upcoming" auction, since argMax(parsed_at) would let it shadow the real
+    # "completed" status of a good prior fetch.
+    site = get_site("litfund")
+    blocked_html = (
+        b"<html><head>"
+        b'<meta property="og:url" '
+        b'content="https://www.litfund.ru/auction/731s2/">'
+        b"</head><body><p>Access denied</p></body></html>"
+    )
+    records = site.parse(blocked_html, "https://www.litfund.ru/auction/731s2/")
+
+    assert records == []
+    assert not any(r.get("status") == "upcoming" for r in records)
+
+
+def test_litfund_completed_session_auction():
+    # Session auctions carry an "s" suffix in the id (e.g. 731s2). A completed
+    # page must parse the id with its suffix and report status "completed".
+    site = get_site("litfund")
+    completed_html = (
+        b"<html><head>"
+        b'<meta property="og:url" '
+        b'content="https://www.litfund.ru/auction/731s2/">'
+        b"</head><body>"
+        b'<div class="uk-display-inline-block">'
+        b"<div><small>\xd0\x90\xd1\x83\xd0\xba\xd1\x86\xd0\xb8\xd0\xbe\xd0\xbd"
+        b" \xe2\x84\x96 731</small></div>"
+        b"<div><small>17 \xd0\xbc\xd0\xb0\xd1\x80\xd1\x82\xd0\xb0 2026"
+        b" \xd0\xb3\xd0\xbe\xd0\xb4\xd0\xb0</small></div>"
+        b"</div>"
+        b'<div><span class="uk-label uk-label-danger">\xd0\x90\xd1\x83'
+        b"\xd0\xba\xd1\x86\xd0\xb8\xd0\xbe\xd0\xbd \xd0\xb7\xd0\xb0\xd0\xb2"
+        b"\xd0\xb5\xd1\x80\xd1\x88\xd1\x91\xd0\xbd</span></div>"
+        b"</body></html>"
+    )
+    records = site.parse(completed_html, "https://www.litfund.ru/auction/731s2/")
+
+    auction = records[0]
+    assert auction["type"] == "auction"
+    assert auction["auction_id"] == "731s2"
+    assert auction["status"] == "completed"
+    assert auction["date_iso"] == "2026-03-17"
+
+
 @pytest.mark.parametrize(
     "page",
     [

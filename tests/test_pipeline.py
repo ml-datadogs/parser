@@ -38,7 +38,7 @@ def test_clickhouse_pipeline_buffers_and_flushes(monkeypatch):
         def command(self, _sql):
             return None
 
-        def insert(self, table, rows, column_names):
+        def insert(self, table, rows, column_names, settings=None):
             inserted.extend(rows)
 
         def close(self):

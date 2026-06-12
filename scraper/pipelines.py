@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,8 @@ from scrapy.crawler import Crawler
 from scrapy.exceptions import NotConfigured
 
 from scraper.items import RawItem
+
+logger = logging.getLogger(__name__)
 
 
 class JsonLinesExportPipeline:
@@ -100,15 +103,19 @@ class ClickHouseRawPipeline:
     def open_spider(self) -> None:
         import clickhouse_connect
 
+        # autogenerate_session_id=False -> stateless requests. A shared session
+        # is locked by the server while one request is in flight, and Scrapy
+        # processes items concurrently, so concurrent buffer flushes on a shared
+        # session raise SESSION_IS_LOCKED (code 373). async_insert is passed per
+        # insert instead of via a stateful ``SET`` (which would need a session).
         self._client = clickhouse_connect.get_client(
             host=self.host,
             port=self.port,
             username=self.user,
             password=self.password,
             database=self.database,
+            autogenerate_session_id=False,
         )
-        self._client.command("SET async_insert = 1")
-        self._client.command("SET wait_for_async_insert = 1")
 
     def close_spider(self) -> None:
         self._flush()
@@ -139,7 +146,23 @@ class ClickHouseRawPipeline:
     def _flush(self) -> None:
         if not self._buffer or self._client is None:
             return
-        self._client.insert(self.table, self._buffer, column_names=self.COLUMNS)
+        try:
+            self._client.insert(
+                self.table,
+                self._buffer,
+                column_names=self.COLUMNS,
+                settings={"async_insert": 1, "wait_for_async_insert": 1},
+            )
+        except Exception as exc:
+            # Keep the buffer and retry on the next flush instead of letting the
+            # exception bubble to Scrapy's item-error logger, which would dump
+            # the whole RawItem (including the full page body) for every row.
+            logger.warning(
+                "ClickHouse insert of %d row(s) failed (%s); retrying on next flush.",
+                len(self._buffer),
+                exc,
+            )
+            return
         self._buffer.clear()
 
 

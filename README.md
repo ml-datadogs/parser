@@ -80,6 +80,8 @@ Apply DDL:
 clickhouse-client --multiquery < sql/raw_items.sql
 clickhouse-client --multiquery < sql/parsed_items.sql
 clickhouse-client --multiquery < sql/parse_state.sql
+clickhouse-client --multiquery < sql/litfund_items.sql
+clickhouse-client --multiquery < sql/litfund_metrics.sql
 ```
 
 Configure `.env`:
@@ -100,6 +102,45 @@ Parse raw rows incrementally:
 ```bash
 uv run python -m scraper.parse --site quotes
 uv run python -m scraper.parse --site quotes --reset
+```
+
+## Litfund: refresh the latest auctions
+
+Scrape the litfund archive for the most recent auctions, skip the ones already
+stored as completed in ClickHouse, then crawl and parse the rest in one command:
+
+```bash
+uv run python -m scraper.litfund --latest 20
+```
+
+- Discovers ids from `/auction/archives/?y=&k=&page=N` (newest-first).
+- Skips auctions already saved as `completed`; re-crawls ones still `upcoming`.
+- Flags: `--dry-run`, `--no-parse`, `--no-skip-existing-lots`, `--max-pages`.
+
+Requires Bright Data and ClickHouse configured in `.env` (the parse/skip steps
+are disabled and all discovered auctions are crawled when `CLICKHOUSE_HOST` is
+empty).
+
+### Litfund crawl metrics
+
+`sql/litfund_metrics.sql` defines read-only views over `raw_items` and
+`parsed_items` for data-count estimation and crawl-process health (no extra
+writes):
+
+- `scraper.litfund_data_overview` - single-row counts: auctions (by status),
+  total lots, avg/max lots per auction, auctions with/without lots, a rough
+  `estimated_total_lots`, and `last_parsed_at`.
+- `scraper.litfund_auction_coverage` - one row per auction: status, lots
+  parsed, pages fetched, HTTP errors, and last fetched/parsed timestamps;
+  surfaces auctions that were fetched but yielded few/zero lots.
+- `scraper.litfund_crawl_health_daily` - per fetch-day fetch volume, error
+  rate, and lot/catalog/other page mix.
+- `scraper.litfund_crawl_health_overall` - lifetime rollup of the same health
+  signals plus first/last fetch timestamps.
+
+```bash
+clickhouse-client -q "SELECT * FROM scraper.litfund_data_overview FORMAT Vertical"
+clickhouse-client -q "SELECT * FROM scraper.litfund_crawl_health_overall FORMAT Vertical"
 ```
 
 ## Adding a new site

@@ -4,7 +4,19 @@ from pathlib import Path
 from scrapy.http import HtmlResponse
 from scrapy.linkextractors import LinkExtractor
 
+from scraper.sites.litfund.discover import extract_auction_ids
 from scraper.sites.registry import get_site, list_sites
+
+
+def _litfund_fixture(name: str) -> str:
+    return (
+        Path(__file__).resolve().parents[1]
+        / "scraper"
+        / "sites"
+        / "litfund"
+        / "fixtures"
+        / name
+    ).read_text(encoding="utf-8")
 
 
 def test_list_sites_includes_demo_sites():
@@ -50,6 +62,17 @@ def test_litfund_auction_link_extraction():
     assert page_urls == {
         f"https://www.litfund.ru/auction/752/?page={n}" for n in range(2, 8)
     }
+
+
+def test_extract_auction_ids_newest_first():
+    """The archive lists auctions newest-first; ids are returned in that order,
+    deduped, and include suffixed ids like 743.1."""
+    ids = extract_auction_ids(_litfund_fixture("archives.html"))
+
+    assert ids == ["754", "753", "752", "750", "749", "747", "743.1"]
+    assert "743.1" in ids
+    # Pagination / utility links under /auction/ must not leak in as ids.
+    assert "archives" not in ids
 
 
 def test_get_site_returns_config_and_parser():

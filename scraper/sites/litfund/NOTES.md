@@ -71,8 +71,51 @@ archive.
 scrapy crawl generic -a site=litfund
 ```
 
+Scoped re-fetch of specific auctions (catalog pages + lots):
+
+```bash
+scrapy crawl litfund_auctions -a auctions=747,752
+```
+
+## Latest-N refresh
+
+One command that scrapes the archive for the N most recent auctions, skips the
+ones already stored as `completed` in ClickHouse, then crawls and parses the
+rest. Re-crawls auctions we only have as `upcoming` so final prices get filled:
+
+```bash
+python -m scraper.litfund --latest 20
+```
+
+Discovery walks `/auction/archives/?y=&k=&page=N` (newest-first) until N ids are
+collected. Useful flags: `--dry-run` (log the resolved ids and exit),
+`--no-parse` (crawl only), `--no-skip-existing-lots`, `--max-pages`.
+
 ## Parse entry
 
 ```bash
 python -m scraper.parse --site litfund
 ```
+
+Auction start date is normalized in the parser to `date_iso` (ISO `YYYY-MM-DD`,
+from the Russian `date` text) and surfaced as a real `auction_date` Date column
+on the `litfund_items` view via a join on `auction_id`.
+
+## Metrics
+
+`sql/litfund_metrics.sql` defines read-only views (no extra writes) for
+data-count estimation and crawl health:
+
+- `litfund_data_overview` - single-row data-count estimate: auctions by status,
+  total/avg/max lots, auctions with/without lots, `estimated_total_lots`,
+  `last_parsed_at`. Answers "how much do we have?".
+- `litfund_auction_coverage` - one row per auction (status, `lots_parsed`,
+  `pages_fetched`, `http_errors`, last fetched/parsed). Spot auctions fetched
+  but with few/zero parsed lots, or carrying HTTP errors.
+- `litfund_crawl_health_daily` - per fetch-day volume, `error_rate`, and
+  lot/catalog/other page mix. Answers "is the crawl healthy over time?".
+- `litfund_crawl_health_overall` - lifetime rollup of the same health signals.
+
+Page-type classification (lot vs catalog vs archive/other) is derived from the
+`url` using the same auction/lot regex shape as `discover.py` and the
+`litfund_auctions` spider.

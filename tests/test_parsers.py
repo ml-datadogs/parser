@@ -55,6 +55,7 @@ def test_litfund_parses_auction():
     assert auction["number"] == "752"
     assert auction["title"]
     assert auction["date"]
+    assert auction["date_iso"] == "2026-06-11"
 
     items = [r for r in records if r["type"] == "item"]
     assert len(items) == 36

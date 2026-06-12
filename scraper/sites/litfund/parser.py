@@ -14,6 +14,41 @@ _AUCTION_URL_RE = re.compile(
 _NUMBER_RE = re.compile(r"№\s*([\d.]+)")
 _WS_RE = re.compile(r"\s+")
 
+_RU_MONTHS = {
+    "января": 1,
+    "февраля": 2,
+    "марта": 3,
+    "апреля": 4,
+    "мая": 5,
+    "июня": 6,
+    "июля": 7,
+    "августа": 8,
+    "сентября": 9,
+    "октября": 10,
+    "ноября": 11,
+    "декабря": 12,
+}
+_RU_DATE_RE = re.compile(
+    r"(\d{1,2})\s+([а-яё]+)\s+(\d{4})", re.IGNORECASE
+)
+
+
+def _parse_ru_date(text: str) -> str | None:
+    """Normalize a Russian date like "11 июня 2026 года" to ISO "2026-06-11".
+
+    Returns ``None`` when the day/month/year cannot be recognized.
+    """
+    if not text:
+        return None
+    match = _RU_DATE_RE.search(text)
+    if not match:
+        return None
+    day, month_word, year = match.groups()
+    month = _RU_MONTHS.get(month_word.lower())
+    if month is None:
+        return None
+    return f"{int(year):04d}-{month:02d}-{int(day):02d}"
+
 
 def _to_text(value: str | None) -> str:
     if not value:
@@ -177,6 +212,7 @@ def _parse_auction(
         "auction_id": auction_id,
         "number": number,
         "date": date,
+        "date_iso": _parse_ru_date(date) or "",
         "status": status,
         "title": title,
         "description": description,

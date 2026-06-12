@@ -194,8 +194,16 @@ def _parse_auction(
     if "Аукцион завершён" in page_text:
         status = "completed"
     else:
+        # Scope the countdown to THIS auction's own label (``lf-<id>-t-to-start``).
+        # The page also renders a "Ближайшие аукционы" block listing other
+        # auctions' countdowns, so a page-wide match would pick the soonest one
+        # (e.g. "Завтра") instead of the auction we're parsing.
         status = (
-            _to_text(selector.css('[data-online$="-t-to-start"]::text').get())
+            _to_text(
+                selector.css(
+                    f'[data-online="lf-{auction_id}-t-to-start"]::text'
+                ).get()
+            )
             or "upcoming"
         )
 

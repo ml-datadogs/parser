@@ -115,6 +115,24 @@ def test_litfund_parses_completed_auction():
     assert any(not item["reserve_not_met"] for item in items)
 
 
+def test_litfund_upcoming_status_ignores_recommendations_block():
+    # The catalog page renders a "Ближайшие аукционы" block listing other
+    # auctions' countdowns (here 753 "Завтра" appears first in the document),
+    # so a page-wide status match would mislabel this auction. The status must
+    # come from THIS auction's own ``lf-<id>-t-to-start`` label.
+    site = get_site("litfund")
+    records = site.parse(
+        _litfund_fixture("auction_upcoming.html"),
+        "https://www.litfund.ru/auction/757/",
+    )
+
+    auction = records[0]
+    assert auction["type"] == "auction"
+    assert auction["auction_id"] == "757"
+    assert auction["status"] == "Через 17 дней"
+    assert auction["status"] != "Завтра"
+
+
 @pytest.mark.parametrize(
     "page",
     [

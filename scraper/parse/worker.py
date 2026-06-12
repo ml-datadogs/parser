@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any
 
 from scraper.sites.registry import get_site
 
 logger = logging.getLogger("scraper.parse")
+
+INSERT_MAX_ATTEMPTS = 3
+INSERT_BACKOFF_BASE_SECONDS = 1.0
 
 
 def _get_client(settings: dict[str, Any]):
@@ -18,6 +22,9 @@ def _get_client(settings: dict[str, Any]):
         username=settings["user"],
         password=settings["password"],
         database=settings["database"],
+        connect_timeout=settings.get("connect_timeout", 10),
+        send_receive_timeout=settings.get("send_receive_timeout", 300),
+        query_retries=settings.get("query_retries", 3),
     )
 
 
@@ -40,6 +47,11 @@ def _load_settings_from_env() -> dict[str, Any]:
         "parsed_table": os.getenv("CLICKHOUSE_PARSED_TABLE", "parsed_items"),
         "state_table": os.getenv("CLICKHOUSE_STATE_TABLE", "parse_state"),
         "batch_size": int(os.getenv("PARSE_BATCH_SIZE", "1000")),
+        "connect_timeout": int(os.getenv("CLICKHOUSE_CONNECT_TIMEOUT", "10")),
+        "send_receive_timeout": int(
+            os.getenv("CLICKHOUSE_SEND_RECEIVE_TIMEOUT", "300")
+        ),
+        "query_retries": int(os.getenv("CLICKHOUSE_QUERY_RETRIES", "3")),
     }
 
 
@@ -49,6 +61,18 @@ def _parse_datetime(value: Any) -> datetime:
     if isinstance(value, str):
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     raise TypeError(f"Unsupported datetime value: {value!r}")
+
+
+def _ensure_utc(value: datetime) -> datetime:
+    """Return a timezone-aware UTC datetime.
+
+    ClickHouse columns are UTC and the driver returns naive datetimes for them.
+    Passing naive datetimes back (as values or query params) makes the driver
+    assume the local timezone, silently shifting every timestamp. Keeping values
+    tz-aware UTC avoids that and, for the parse watermark, prevents an infinite
+    reprocessing loop when the worker's machine is not on UTC.
+    """
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
 def get_watermark(client, state_table: str, spider: str) -> datetime:
@@ -71,8 +95,8 @@ def set_watermark(client, state_table: str, spider: str, watermark: datetime) ->
         [
             [
                 spider,
-                watermark.replace(tzinfo=None),
-                datetime.now(timezone.utc).replace(tzinfo=None),
+                _ensure_utc(watermark),
+                datetime.now(timezone.utc),
             ]
         ],
         column_names=["spider", "watermark", "updated_at"],
@@ -90,13 +114,13 @@ def fetch_raw_batch(
         f"""
         SELECT url, body, fetched_at
         FROM {raw_table}
-        WHERE spider = {{spider:String}} AND fetched_at > {{watermark:DateTime}}
+        WHERE spider = {{spider:String}} AND fetched_at > {{watermark:DateTime('UTC')}}
         ORDER BY fetched_at
         LIMIT {{limit:UInt32}}
         """,
         parameters={
             "spider": spider,
-            "watermark": watermark.replace(tzinfo=None),
+            "watermark": _ensure_utc(watermark),
             "limit": batch_size,
         },
     )
@@ -108,31 +132,70 @@ def fetch_raw_batch(
     return rows
 
 
-def insert_parsed_rows(
-    client,
-    parsed_table: str,
+PARSED_COLUMNS = ["spider", "url", "source_fetched_at", "parsed_at", "fields"]
+
+
+def build_parsed_rows(
     spider: str,
     url: str,
     source_fetched_at: datetime,
     records: list[dict[str, Any]],
-) -> None:
-    if not records:
-        return
-    rows = [
+) -> list[list[Any]]:
+    parsed_at = datetime.now(timezone.utc)
+    return [
         [
             spider,
             url,
-            source_fetched_at.replace(tzinfo=None),
-            datetime.now(timezone.utc).replace(tzinfo=None),
+            _ensure_utc(source_fetched_at),
+            parsed_at,
             record,
         ]
         for record in records
     ]
-    client.insert(
-        parsed_table,
-        rows,
-        column_names=["spider", "url", "source_fetched_at", "parsed_at", "fields"],
-    )
+
+
+def insert_parsed_rows(
+    client,
+    settings: dict[str, Any],
+    rows: list[list[Any]],
+):
+    """Insert parsed rows in a single request, retrying transient drops.
+
+    Returns the (possibly recreated) client. The connection is rebuilt between
+    attempts because a connection that hit an SSL EOF can be left in a stale
+    state. On final failure the underlying error is re-raised so the caller can
+    avoid advancing the watermark, keeping the run resumable.
+    """
+    from clickhouse_connect.driver.exceptions import OperationalError
+
+    if not rows:
+        return client
+
+    parsed_table = settings["parsed_table"]
+    last_exc: Exception | None = None
+    for attempt in range(1, INSERT_MAX_ATTEMPTS + 1):
+        try:
+            client.insert(parsed_table, rows, column_names=PARSED_COLUMNS)
+            return client
+        except OperationalError as exc:
+            last_exc = exc
+            logger.warning(
+                "insert attempt %d/%d failed: %s",
+                attempt,
+                INSERT_MAX_ATTEMPTS,
+                exc,
+            )
+            if attempt == INSERT_MAX_ATTEMPTS:
+                break
+            try:
+                client.close()
+            except Exception:
+                logger.debug("error closing stale client", exc_info=True)
+            time.sleep(INSERT_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)))
+            client = _get_client(settings)
+
+    assert last_exc is not None
+    raise last_exc
 
 
 def run_parse_worker(
@@ -184,20 +247,18 @@ def run_parse_worker(
         batch_no += 1
         batch_parsed = 0
         max_fetched_at = watermark
+        pending_rows: list[list[Any]] = []
         for row in batch:
             records = site_pkg.parse(row["body"], row["url"])
-            insert_parsed_rows(
-                client,
-                settings["parsed_table"],
-                site,
-                row["url"],
-                row["fetched_at"],
-                records,
+            pending_rows.extend(
+                build_parsed_rows(site, row["url"], row["fetched_at"], records)
             )
             batch_parsed += len(records)
             logger.debug("parsed %d records from %s", len(records), row["url"])
             if row["fetched_at"] > max_fetched_at:
                 max_fetched_at = row["fetched_at"]
+
+        client = insert_parsed_rows(client, settings, pending_rows)
 
         total_parsed += batch_parsed
         total_rows += len(batch)

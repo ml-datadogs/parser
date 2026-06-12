@@ -106,7 +106,11 @@ SELECT
     a.last_parsed_at                AS last_parsed_at,
     ifNull(f.pages_fetched, 0)      AS pages_fetched,
     ifNull(f.http_errors, 0)        AS http_errors,
-    f.last_fetched_at               AS last_fetched_at
+    f.last_fetched_at               AS last_fetched_at,
+    -- A catalog page holds 36 lot cards. Exactly 36 lots from a single fetched
+    -- page means pagination was never followed (the rest of the auction is
+    -- missing), as opposed to a genuine small auction that has < 36 lots.
+    (ifNull(l.lots_parsed, 0) = 36 AND ifNull(f.pages_fetched, 0) <= 1) AS likely_truncated
 FROM auctions AS a
 LEFT JOIN lots AS l USING (auction_id)
 LEFT JOIN fetches AS f USING (auction_id)

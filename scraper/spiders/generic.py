@@ -48,8 +48,15 @@ class GenericSiteSpider(CrawlSpider, BaseSpider):
                 url, callback=self.parse_start_url, meta=dict(proxy_meta)
             )
 
-    def parse_start_url(self, response):
+    def parse_start_url(self, response, **kwargs):
+        # ``start_requests`` dispatches start URLs straight to this callback,
+        # bypassing CrawlSpider's ``parse_with_rules`` (which both parses and
+        # follows links). Without following links here, pagination and lot links
+        # that only appear on the start pages are never crawled - so a scoped
+        # crawl of an auction would stop at catalog page 1. Apply the rules
+        # explicitly so start pages are followed like any other page.
         yield from self.parse_item(response)
+        yield from self._requests_to_follow(response)
 
     def _build_request(self, rule, link):
         request = super()._build_request(rule, link)

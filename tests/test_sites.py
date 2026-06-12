@@ -87,3 +87,13 @@ def test_site_config_custom_settings():
     settings = site.config.custom_settings()
     assert settings["ROBOTSTXT_OBEY"] is True
     assert settings["DOWNLOAD_DELAY"] == 0.5
+
+
+def test_litfund_custom_settings_retry_and_headers():
+    settings = get_site("litfund").config.custom_settings()
+    # 404 must be retryable so a cloaked-but-valid auction is rotated to a new IP.
+    assert 404 in settings["RETRY_HTTP_CODES"]
+    assert settings["RETRY_TIMES"] == 5
+    headers = settings["DEFAULT_REQUEST_HEADERS"]
+    assert headers["Accept-Language"].startswith("ru-RU")
+    assert "sec-ch-ua" in headers

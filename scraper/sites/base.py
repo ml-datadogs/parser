@@ -22,6 +22,10 @@ class SiteConfig:
     link_rules: LinkRules = field(default_factory=LinkRules)
     proxy_zone: str | None = None
     proxy_country: str | None = None
+    # Bright Data Web Unlocker zone. When set (and an API token is configured),
+    # requests for this site route through the Unlocker API instead of the
+    # residential proxy. Read by BrightDataUnlockerMiddleware via the spider.
+    unlocker_zone: str | None = None
     download_delay: float | None = None
     concurrent_requests: int | None = None
     concurrent_requests_per_domain: int | None = None
@@ -29,6 +33,9 @@ class SiteConfig:
     autothrottle_start_delay: float | None = None
     robots_txt_obey: bool = True
     user_agent: str | None = None
+    retry_http_codes: tuple[int, ...] | None = None
+    retry_times: int | None = None
+    default_request_headers: tuple[tuple[str, str], ...] | None = None
 
     def custom_settings(self) -> dict[str, Any]:
         settings: dict[str, Any] = {}
@@ -48,6 +55,12 @@ class SiteConfig:
             settings["AUTOTHROTTLE_START_DELAY"] = self.autothrottle_start_delay
         if self.user_agent is not None:
             settings["USER_AGENT"] = self.user_agent
+        if self.retry_http_codes is not None:
+            settings["RETRY_HTTP_CODES"] = list(self.retry_http_codes)
+        if self.retry_times is not None:
+            settings["RETRY_TIMES"] = self.retry_times
+        if self.default_request_headers is not None:
+            settings["DEFAULT_REQUEST_HEADERS"] = dict(self.default_request_headers)
         settings["ROBOTSTXT_OBEY"] = self.robots_txt_obey
         return settings
 

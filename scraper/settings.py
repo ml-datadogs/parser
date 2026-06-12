@@ -25,6 +25,9 @@ RETRY_TIMES = 3
 RETRY_HTTP_CODES = [403, 429, 500, 502, 503, 504]
 
 DOWNLOADER_MIDDLEWARES = {
+    # Unlocker runs before the residential proxy: when it wraps a request the
+    # proxy middleware skips it (auth is via Bearer token, not the proxy).
+    "scraper.middlewares.BrightDataUnlockerMiddleware": 590,
     "scraper.middlewares.BrightDataProxyMiddleware": 610,
 }
 
@@ -47,6 +50,12 @@ BRIGHTDATA_VERIFY_SSL = os.getenv("BRIGHTDATA_VERIFY_SSL", "false").lower() in {
     "true",
     "yes",
 }
+# Bright Data Web Unlocker (API mode). When the token is set, sites that define
+# an unlocker_zone are routed through the Unlocker API.
+BRIGHTDATA_API_TOKEN = os.getenv("BRIGHTDATA_API_TOKEN", "")
+BRIGHTDATA_API_URL = os.getenv(
+    "BRIGHTDATA_API_URL", "https://api.brightdata.com/request"
+)
 
 # ClickHouse
 CLICKHOUSE_HOST = os.getenv("CLICKHOUSE_HOST", "")

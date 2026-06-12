@@ -20,10 +20,18 @@ SITE = "litfund"
 
 
 def _configure_logging() -> None:
+    level = os.getenv("LOG_LEVEL", "INFO").upper()
     logging.basicConfig(
-        level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        level=level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # basicConfig leaves its handler at NOTSET (emits every record). Scrapy's
+    # CrawlerProcess later calls logging.root.setLevel(NOTSET) when it installs
+    # its own handler, after which this NOTSET handler would print every DEBUG
+    # record - including full page-body RawItem dumps ("Scraped from ... {'body':
+    # b'...'}"). Pin the handler level so DEBUG stays filtered regardless.
+    for handler in logging.getLogger().handlers:
+        handler.setLevel(level)
 
 
 def _fetch(url: str) -> str:
@@ -138,7 +146,11 @@ def _run_crawl(to_crawl: list[str], *, skip_existing: bool) -> None:
     settings.set(
         "LOG_LEVEL", os.getenv("LOG_LEVEL", "INFO").upper(), priority="cmdline"
     )
-    process = CrawlerProcess(settings)
+    # install_root_handler=False: keep the logging handler configured in
+    # _configure_logging() instead of letting Scrapy add its own (which also
+    # resets the root logger to NOTSET). Our handler is pinned to LOG_LEVEL, so
+    # this keeps the crawl at INFO and avoids duplicated lines / DEBUG body dumps.
+    process = CrawlerProcess(settings, install_root_handler=False)
     process.crawl(
         "litfund_auctions",
         auctions=",".join(to_crawl),

@@ -62,6 +62,13 @@ BRIGHTDATA_API_URL = os.getenv(
 BRIGHTDATA_UNLOCKER_CONCURRENCY = int(
     os.getenv("BRIGHTDATA_UNLOCKER_CONCURRENCY", "128")
 )
+# Diagnostics for Web Unlocker "bad 200" responses. When a directory is set, the
+# full raw body of each dropped bad-200 is dumped there (capped per run) so the
+# upstream failure mode (JSON error envelope / challenge page / truncation) can
+# be inspected. Empty (default) keeps capture off; a short body snippet is still
+# logged at WARNING either way.
+BRIGHTDATA_UNLOCKER_DEBUG_DIR = os.getenv("BRIGHTDATA_UNLOCKER_DEBUG_DIR", "")
+BRIGHTDATA_UNLOCKER_DEBUG_MAX = int(os.getenv("BRIGHTDATA_UNLOCKER_DEBUG_MAX", "20"))
 
 # Persistent request queue. Empty (default) disables it; set to a directory to
 # make a crawl resumable so an interrupted run does not refetch (and, under the

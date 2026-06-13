@@ -71,6 +71,11 @@ class LitfundAuctionsSpider(GenericSiteSpider):
         else:
             self._lot_url_re = re.compile(_ANY_LOT_URL_RE)
         self._existing_lot_urls: set[str] | None = None
+        # Fetch progress: how many pages came back OK, and (heal only) the total
+        # targeted. Logged per page so a healthy run is visible amid the drop
+        # warnings for the requests that are still failing.
+        self._heal_total = 0
+        self._fetched_ok = 0
         super().__init__(site="litfund", *args, **kwargs)
         # Scrapy 2.13+ drives the crawl from ``start_urls`` (the inherited
         # ``start_requests`` is no longer consulted), so scope the entry points
@@ -90,9 +95,47 @@ class LitfundAuctionsSpider(GenericSiteSpider):
         # straight from ClickHouse, with no link-following (rules are empty).
         proxy_meta = self.site_config.proxy_meta()
         urls = self._load_lots_missing_data()
-        self.logger.info("heal: %d lot(s) need re-fetching.", len(urls))
+        self._heal_total = len(urls)
+        self.logger.info("heal: %d lot(s) need re-fetching.", self._heal_total)
         for url in urls:
             yield scrapy.Request(url, callback=self.parse_item, meta=dict(proxy_meta))
+
+    def parse_item(self, response):
+        # Only good responses reach here (the Unlocker middleware retries empty
+        # bodies and drops stripped/cloaked lot pages before this callback), so
+        # logging each one gives positive progress that is otherwise invisible at
+        # INFO amid the drop warnings for the requests still failing.
+        self._fetched_ok += 1
+        if self.heal:
+            self.logger.info(
+                "heal: fetched OK %d/%d %s",
+                self._fetched_ok,
+                self._heal_total,
+                response.url,
+            )
+        else:
+            # A catalog crawl has no known total (lots are discovered while
+            # following links), so just report a running count.
+            self.logger.info("fetched OK #%d %s", self._fetched_ok, response.url)
+        yield from super().parse_item(response)
+
+    def closed(self, reason):
+        if self.heal:
+            missing = max(self._heal_total - self._fetched_ok, 0)
+            self.logger.info(
+                "heal finished (%s): %d/%d lots fetched OK, %d still missing "
+                "(rerun heal to retry them).",
+                reason,
+                self._fetched_ok,
+                self._heal_total,
+                missing,
+            )
+        else:
+            self.logger.info(
+                "crawl finished (%s): %d page(s) fetched OK.",
+                reason,
+                self._fetched_ok,
+            )
 
     def _build_rules(self, config):
         if self.heal:

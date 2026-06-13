@@ -1,3 +1,4 @@
+import gzip
 import json
 import logging
 from types import SimpleNamespace
@@ -214,6 +215,56 @@ def test_unlocker_restores_original_url_on_response():
     assert restored.url == original
 
 
+def test_unlocker_decompresses_gzip_lot_body():
+    """The Unlocker sometimes returns a still-gzip-compressed body whose
+    Content-Encoding header Scrapy never decoded. It must be inflated before the
+    content gate so a real lot page is not dropped as 'missing microdata' just
+    because its raw gzip bytes lack the marker."""
+    middleware = BrightDataUnlockerMiddleware(api_token="tok")
+    original = "https://www.litfund.ru/auction/716/90/"
+    request = Request(
+        "https://api.brightdata.com/request", meta={"_unlocker_url": original}
+    )
+    html = (
+        b"<html><head><meta property='og:url' content='x'></head><body>"
+        b"<span data-lf-microdata='lot-name'>A book</span>"
+        + b"<!-- pad -->" * 60
+        + b"</body></html>"
+    )
+    response = HtmlResponse(
+        url="https://api.brightdata.com/request",
+        body=gzip.compress(html),
+        headers={b"Content-Type": b"text/html; charset=UTF-8"},
+    )
+    result = middleware.process_response(request, response, _spider_with_crawler())
+    assert isinstance(result, HtmlResponse)
+    assert result.url == original
+    assert b"data-lf-microdata" in result.body
+    assert b"Content-Encoding" not in result.headers
+
+
+def test_unlocker_decompresses_via_content_encoding_header():
+    """Honor an explicit Content-Encoding: gzip even when callers strip the body
+    down (covers servers that set the header but whose payload Scrapy missed)."""
+    middleware = BrightDataUnlockerMiddleware(api_token="tok")
+    original = "https://www.litfund.ru/auction/716/"
+    request = Request(
+        "https://api.brightdata.com/request", meta={"_unlocker_url": original}
+    )
+    html = b"<html><body>" + b"<!-- pad -->" * 80 + b"</body></html>"
+    response = HtmlResponse(
+        url="https://api.brightdata.com/request",
+        body=gzip.compress(html),
+        headers={
+            b"Content-Type": b"text/html",
+            b"Content-Encoding": b"gzip",
+        },
+    )
+    result = middleware.process_response(request, response, _spider_with_crawler())
+    assert isinstance(result, HtmlResponse)
+    assert result.body == html
+
+
 def test_unlocker_retries_empty_body_200():
     """A 200 with an empty/truncated body is a transient Unlocker failure: it
     must be retried (re-issued) rather than stored as a hollow page."""
@@ -231,10 +282,10 @@ def test_unlocker_retries_empty_body_200():
 
 
 def test_unlocker_drops_lot_page_without_microdata_without_retry():
-    """A full 200 lot page that lacks lot microdata is the Unlocker degrading
-    under concurrency (or a cloaked/removed lot). It must be dropped immediately
-    (no retry, which would just multiply billed calls); the low-concurrency heal
-    pass recovers it instead."""
+    """A full 200 lot page that still lacks lot microdata after decompression is
+    a genuinely cloaked/removed lot. It must be dropped immediately (no retry,
+    which would just multiply billed calls); the low-concurrency heal pass
+    recovers it instead."""
     middleware = BrightDataUnlockerMiddleware(api_token="tok")
     original = "https://www.litfund.ru/auction/716/90/"
     request = Request(

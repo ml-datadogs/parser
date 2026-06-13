@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import base64
+import gzip
 import json
 import re
 import secrets
+import time
+import zlib
+from pathlib import Path
 from urllib.parse import quote
 
 from scrapy import Request
@@ -169,9 +173,15 @@ class BrightDataUnlockerMiddleware:
         self,
         api_token: str = "",
         api_url: str = "https://api.brightdata.com/request",
+        debug_dir: str = "",
+        debug_max: int = 20,
     ) -> None:
         self.api_token = api_token
         self.api_url = api_url
+        self.debug_dir = debug_dir
+        self.debug_max = debug_max
+        # Number of bad-200 bodies dumped so far this run, to enforce debug_max.
+        self._debug_dumped = 0
 
     @classmethod
     def from_crawler(cls, crawler):
@@ -181,6 +191,8 @@ class BrightDataUnlockerMiddleware:
             api_url=settings.get(
                 "BRIGHTDATA_API_URL", "https://api.brightdata.com/request"
             ),
+            debug_dir=settings.get("BRIGHTDATA_UNLOCKER_DEBUG_DIR", ""),
+            debug_max=settings.getint("BRIGHTDATA_UNLOCKER_DEBUG_MAX", 20),
         )
 
     def _zone_for_request(self, request: Request, spider) -> str | None:
@@ -192,6 +204,14 @@ class BrightDataUnlockerMiddleware:
 
     def process_request(self, request: Request, spider):
         if not self.api_token or request.meta.get("_unlocker_wrapped"):
+            return None
+
+        # robots.txt is a tiny static file with no anti-bot challenge; routing it
+        # through the Unlocker only burns billed retries (and the API has been
+        # observed to truncate it to a sub-500-byte body that trips the content
+        # gate). Scrapy's RobotsTxtMiddleware treats a failed/empty robots fetch
+        # as allow-all, so leaving it unwrapped costs nothing.
+        if request.url.endswith("/robots.txt"):
             return None
 
         zone = self._zone_for_request(request, spider)
@@ -217,6 +237,67 @@ class BrightDataUnlockerMiddleware:
             },
         )
 
+    @staticmethod
+    def _decompress_body(body: bytes, encoding: bytes) -> bytes | None:
+        """Inflate a still-compressed body, or ``None`` if it isn't/ can't be.
+
+        Selects the codec from the gzip magic bytes (the observed case) or an
+        explicit ``Content-Encoding`` header, falling back across the common
+        encodings since the Unlocker is inconsistent about which it sends.
+        """
+        if body[:2] == b"\x1f\x8b" or encoding == b"gzip":
+            try:
+                return gzip.decompress(body)
+            except (OSError, EOFError, zlib.error):
+                return None
+        if encoding == b"deflate":
+            try:
+                return zlib.decompress(body)
+            except zlib.error:
+                try:
+                    # Raw DEFLATE (no zlib header), which some servers send.
+                    return zlib.decompress(body, -zlib.MAX_WBITS)
+                except zlib.error:
+                    return None
+        if encoding == b"br":
+            try:
+                import brotli
+
+                return brotli.decompress(body)
+            except Exception:
+                return None
+        return None
+
+    def _maybe_decompress(self, response, original: str, spider):
+        """Return ``response`` with its body inflated when the Unlocker handed
+        back a still-compressed payload.
+
+        Bright Data's Web Unlocker intermittently returns a body that is still
+        gzip-compressed but whose ``Content-Encoding`` header Scrapy's
+        ``HttpCompressionMiddleware`` never acted on (the API frequently omits
+        it), so raw gzip bytes reach this middleware. Left undecoded they fail
+        the content gate below even though the real page is fully intact, which
+        previously surfaced as spurious "lot page missing lot microdata" drops.
+        """
+        body = response.body or b""
+        if not body:
+            return response
+        encoding = response.headers.get(b"Content-Encoding", b"").lower()
+        decompressed = self._decompress_body(body, encoding)
+        if decompressed is None:
+            return response
+
+        headers = response.headers.copy()
+        if b"Content-Encoding" in headers:
+            del headers[b"Content-Encoding"]
+        spider.logger.debug(
+            "Web Unlocker body decompressed for %s (%d -> %d bytes).",
+            original,
+            len(body),
+            len(decompressed),
+        )
+        return response.replace(body=decompressed, headers=headers)
+
     def _bad_body_reason(self, response, original: str) -> tuple[str, bool] | None:
         """Classify a 200 Unlocker response that is not a usable page.
 
@@ -224,10 +305,10 @@ class BrightDataUnlockerMiddleware:
 
         - An empty/truncated body is a transient Unlocker hiccup: ``retryable``,
           since re-issuing usually gets the page on the next attempt.
-        - A full lot page that lacks lot microdata is the Unlocker degrading
-          under concurrency (it returns a stripped variant) or a cloaked/removed
-          lot. Retrying within the same overloaded run rarely recovers it and
-          just multiplies billed calls, so it is NOT retryable: drop it and let a
+        - A full lot page that lacks lot microdata (after ``_maybe_decompress``
+          has inflated any still-compressed body) is a genuinely cloaked or
+          removed lot. Retrying within the same run rarely recovers it and just
+          multiplies billed calls, so it is NOT retryable: drop it and let a
           low-concurrency heal pass (``-a heal=1``) recover it later.
         """
         body = response.body or b""
@@ -236,6 +317,43 @@ class BrightDataUnlockerMiddleware:
         if _LOT_URL_RE.search(original) and b"data-lf-microdata" not in body:
             return "lot page missing lot microdata", False
         return None
+
+    def _capture_bad_body(self, response, original: str, reason: str, spider) -> None:
+        """Surface what the Unlocker actually returned for a dropped bad 200.
+
+        Always logs the Content-Type, body length, and a short head snippet so
+        the failure mode is visible at WARNING. When a debug dir is configured,
+        also dumps the full raw body (capped at ``debug_max`` per run) so a JSON
+        error envelope / challenge page / truncated transfer can be inspected.
+        """
+        body = response.body or b""
+        content_type = response.headers.get(b"Content-Type", b"").decode(
+            "latin-1", "replace"
+        )
+        spider.logger.warning(
+            "Web Unlocker bad 200 body for %s (%s): content_type=%r len=%d head=%r",
+            original,
+            reason,
+            content_type,
+            len(body),
+            body[:300],
+        )
+
+        if not self.debug_dir or self._debug_dumped >= self.debug_max:
+            return
+        try:
+            dump_dir = Path(self.debug_dir)
+            dump_dir.mkdir(parents=True, exist_ok=True)
+            safe_url = re.sub(r"[^A-Za-z0-9]+", "_", original).strip("_")[:120]
+            safe_reason = re.sub(r"[^A-Za-z0-9]+", "_", reason).strip("_")[:60]
+            path = dump_dir / f"{safe_url}__{safe_reason}__{int(time.time() * 1000)}.bin"
+            path.write_bytes(body)
+            self._debug_dumped += 1
+            spider.logger.warning("Web Unlocker bad 200 body dumped to %s", path)
+        except OSError as exc:
+            spider.logger.warning(
+                "Web Unlocker bad 200 body dump failed for %s (%s).", original, exc
+            )
 
     def process_response(self, request: Request, response, spider):
         original = request.meta.get("_unlocker_url")
@@ -253,12 +371,18 @@ class BrightDataUnlockerMiddleware:
             )
             return response
 
+        # The Unlocker sometimes returns a still-compressed body that Scrapy did
+        # not decode; inflate it before the content gate so a real page is not
+        # mistaken for a stripped one (its gzip bytes lack the microdata marker).
+        response = self._maybe_decompress(response, original, spider)
+
         # A 200 with no usable content must never be stored as a (hollow) page.
         # Transient empties are retried; a stripped/cloaked lot page is dropped
         # outright (the heal pass recovers it at low concurrency).
         bad = self._bad_body_reason(response, original)
         if bad is not None:
             reason, retryable = bad
+            self._capture_bad_body(response, original, reason, spider)
             if retryable:
                 retry_req = get_retry_request(
                     request, spider=spider, reason=f"unlocker bad 200: {reason}"

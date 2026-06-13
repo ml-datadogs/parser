@@ -138,8 +138,7 @@ def _stored_auction_ids(*, completed_only: bool) -> set[str] | None:
         client.close()
 
 
-def _run_crawl(to_crawl: list[str], *, skip_existing: bool) -> None:
-    from scrapy.crawler import CrawlerProcess
+def _crawler_settings():
     from scrapy.utils.project import get_project_settings
 
     settings = get_project_settings()
@@ -149,6 +148,23 @@ def _run_crawl(to_crawl: list[str], *, skip_existing: bool) -> None:
     settings.set(
         "LOG_LEVEL", os.getenv("LOG_LEVEL", "INFO").upper(), priority="cmdline"
     )
+    return settings
+
+
+def _run_crawl(
+    to_crawl: list[str], *, skip_existing: bool, concurrency: int | None = None
+) -> None:
+    from scrapy.crawler import CrawlerProcess
+
+    settings = _crawler_settings()
+    # The Web Unlocker returns stripped/empty pages under high concurrency, which
+    # show up as a flood of "Web Unlocker bad 200" warnings and missing lots.
+    # When given, cap concurrency to keep it healthy (otherwise the default
+    # DEFAULT_UNLOCKER_CONCURRENCY applies).
+    if concurrency is not None:
+        settings.set(
+            "BRIGHTDATA_UNLOCKER_CONCURRENCY", concurrency, priority="cmdline"
+        )
     # install_root_handler=False: keep the logging handler configured in
     # _configure_logging() instead of letting Scrapy add its own (which also
     # resets the root logger to NOTSET). Our handler is pinned to LOG_LEVEL, so
@@ -162,6 +178,27 @@ def _run_crawl(to_crawl: list[str], *, skip_existing: bool) -> None:
     process.start()
 
 
+def _run_heal_crawl(*, auctions: str | None, concurrency: int) -> None:
+    """Crawl litfund in heal mode: re-fetch only the lots missing good data.
+
+    The Web Unlocker returns stripped/empty pages under crawl concurrency, so
+    healing runs at very low concurrency (sequential is reliable). A small
+    ClickHouse batch makes the pipeline flush often, so an interrupted heal still
+    persists the lots fetched so far.
+    """
+    from scrapy.crawler import CrawlerProcess
+
+    settings = _crawler_settings()
+    settings.set("BRIGHTDATA_UNLOCKER_CONCURRENCY", concurrency, priority="cmdline")
+    settings.set("CLICKHOUSE_BATCH_SIZE", 25, priority="cmdline")
+    process = CrawlerProcess(settings, install_root_handler=False)
+    crawl_kwargs: dict[str, str] = {"heal": "1"}
+    if auctions:
+        crawl_kwargs["auctions"] = auctions
+    process.crawl("litfund_auctions", **crawl_kwargs)
+    process.start()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -172,8 +209,29 @@ def main() -> None:
     parser.add_argument(
         "--latest",
         type=int,
-        required=True,
         help="Number of most-recent auctions to consider.",
+    )
+    parser.add_argument(
+        "--heal",
+        action="store_true",
+        help=(
+            "Heal mode: re-fetch only lots missing good data (low concurrency), "
+            "then parse. Mutually exclusive with --latest."
+        ),
+    )
+    parser.add_argument(
+        "--auctions",
+        help="Scope heal mode to these comma-separated auction ids (default: all).",
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=None,
+        help=(
+            "Cap Web Unlocker concurrency (both modes). Lower it if you see a "
+            "flood of 'Web Unlocker bad 200' warnings. Defaults: 1 in heal mode, "
+            "the spider default otherwise."
+        ),
     )
     parser.add_argument(
         "--no-parse",
@@ -206,11 +264,31 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.latest < 1:
+    if args.heal == (args.latest is not None):
+        parser.error("pass exactly one of --latest or --heal")
+    if args.latest is not None and args.latest < 1:
         parser.error("--latest must be >= 1")
 
     _configure_logging()
     load_dotenv()
+
+    if args.heal:
+        if not os.getenv("CLICKHOUSE_HOST", ""):
+            parser.error("--heal requires CLICKHOUSE_HOST to find lots missing data.")
+        heal_concurrency = args.concurrency if args.concurrency is not None else 1
+        logger.info(
+            "heal mode: re-fetching lots missing data%s at concurrency %d",
+            f" for auctions {args.auctions}" if args.auctions else "",
+            heal_concurrency,
+        )
+        _run_heal_crawl(auctions=args.auctions, concurrency=heal_concurrency)
+        if args.no_parse:
+            logger.info("heal crawl done; --no-parse set, skipping the parse worker.")
+            return
+        logger.info("heal crawl done; running parse worker for site=%s", SITE)
+        total = run_parse_worker(SITE)
+        logger.info("parse done; %d records parsed for site=%s", total, SITE)
+        return
 
     candidates = discover_latest(args.latest, max_pages=args.max_pages)
     logger.info(
@@ -251,7 +329,11 @@ def main() -> None:
         logger.info("dry run: not crawling or parsing.")
         return
 
-    _run_crawl(to_crawl, skip_existing=not args.no_skip_existing_lots)
+    _run_crawl(
+        to_crawl,
+        skip_existing=not args.no_skip_existing_lots,
+        concurrency=args.concurrency,
+    )
 
     if args.no_parse:
         logger.info("crawl done; --no-parse set, skipping the parse worker.")

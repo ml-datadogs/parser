@@ -151,6 +151,24 @@ def test_litfund_skips_degenerate_blocked_page():
     assert not any(r.get("status") == "upcoming" for r in records)
 
 
+def test_litfund_skips_lot_page_without_microdata():
+    # A blocked/empty/"лот не найден" 200 lot page carries no lot microdata.
+    # The parser must not emit a hollow item (all-empty fields) for it, since
+    # that pollutes parsed_items and surfaces as a blank litfund_items row.
+    site = get_site("litfund")
+    not_found_html = (
+        b"<html><head>"
+        b'<meta property="og:url" '
+        b'content="https://www.litfund.ru/auction/716/90/">'
+        b'<meta property="og:image" '
+        b'content="https://www.litfund.ru/i/img/logo_v3.png">'
+        b"</head><body><p>not found</p></body></html>"
+    )
+    records = site.parse(not_found_html, "https://www.litfund.ru/auction/716/90/")
+
+    assert records == []
+
+
 def test_litfund_completed_session_auction():
     # Session auctions carry an "s" suffix in the id (e.g. 731s2). A completed
     # page must parse the id with its suffix and report status "completed".

@@ -65,7 +65,19 @@ def _ids_from_url(url: str) -> tuple[str | None, str | None]:
 
 def _parse_lot(
     selector: Selector, auction_id: str | None, lot_number: str | None, url: str
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
+    # Guard against blocked/empty/"лот не найден" 200 pages: they carry no lot
+    # microdata, so emitting a record here would produce an all-empty (hollow)
+    # row that pollutes parsed_items (and, when it is the only fetch for a lot,
+    # surfaces as a blank row in litfund_items). Mirror _parse_auction's guard.
+    has_lot_content = bool(
+        selector.css('[data-lf-microdata="lot-name"]').get()
+        or selector.css('[data-lf-microdata="lot-start-price"]').get()
+        or selector.css('[data-lf-microdata="lot-index"]').get()
+    )
+    if not has_lot_content:
+        return None
+
     title = _to_text(selector.css('[data-lf-microdata="lot-name"]::text').get())
     if not title:
         title = _to_text(selector.css('meta[property="og:title"]::attr(content)').get())
@@ -247,7 +259,8 @@ def parse(body: bytes | str, url: str) -> list[dict]:
         return []
 
     if lot_number is not None:
-        return [_parse_lot(selector, auction_id, lot_number, url)]
+        record = _parse_lot(selector, auction_id, lot_number, url)
+        return [record] if record is not None else []
 
     cards = selector.css("article.tm-product-card")
     auction = _parse_auction(selector, auction_id, url)

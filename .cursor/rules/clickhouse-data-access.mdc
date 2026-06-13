@@ -1,0 +1,26 @@
+---
+description: How to query ClickHouse data in this project
+alwaysApply: true
+---
+
+# ClickHouse data access
+
+For ANY ClickHouse interaction — listing databases, inspecting tables/schema, or
+querying data (e.g. `scraper.raw_items`, `scraper.parsed_items`,
+`scraper.litfund_items`) — ALWAYS use the `user-mcp-toolbox` MCP server's `ch-*`
+tools:
+
+- `ch-list-databases` — enumerate databases (no args).
+- `ch-list-tables` — list tables in a given database (`database` arg required).
+- `ch-execute-sql` — run arbitrary SQL: data queries plus schema inspection via
+  `DESCRIBE <table>` or `SHOW CREATE TABLE <table>`.
+
+Do NOT use the ClickHouse cloud plugin MCP server
+(`plugin-clickhouse-cursor-plugin-clickhouse`) for any of this. The toolbox is the
+source of truth for this project's DB.
+
+## Gotcha
+
+The toolbox uses the native protocol; do NOT append `FORMAT ...` clauses
+(e.g. `FORMAT Vertical`) — they break decoding ("unexpected value ... for boolean").
+Return booleans via comparisons instead, e.g. `position(body, 'x') > 0 AS has_x`.

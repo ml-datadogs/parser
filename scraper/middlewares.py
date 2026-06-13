@@ -2,10 +2,21 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import secrets
 from urllib.parse import quote
 
 from scrapy import Request
+from scrapy.downloadermiddlewares.retry import get_retry_request
+from scrapy.exceptions import IgnoreRequest
+
+# A litfund lot-detail URL: /auction/<id>/<lot>/. Catalog pages (/auction/<id>/)
+# legitimately carry no lot microdata, so the content gate below only applies to
+# lot-detail responses.
+_LOT_URL_RE = re.compile(r"/auction/\d+(?:[.s]\d+)?/\d+[a-z]?/")
+# Real litfund pages are tens of KB; anything this small is a truncated/empty
+# 200 (observed: 0-byte bodies from transient Web Unlocker hiccups).
+_MIN_BODY_BYTES = 500
 
 
 def build_brightdata_proxy_url(
@@ -206,6 +217,26 @@ class BrightDataUnlockerMiddleware:
             },
         )
 
+    def _bad_body_reason(self, response, original: str) -> tuple[str, bool] | None:
+        """Classify a 200 Unlocker response that is not a usable page.
+
+        Returns ``(reason, retryable)`` or ``None`` when the body is fine.
+
+        - An empty/truncated body is a transient Unlocker hiccup: ``retryable``,
+          since re-issuing usually gets the page on the next attempt.
+        - A full lot page that lacks lot microdata is the Unlocker degrading
+          under concurrency (it returns a stripped variant) or a cloaked/removed
+          lot. Retrying within the same overloaded run rarely recovers it and
+          just multiplies billed calls, so it is NOT retryable: drop it and let a
+          low-concurrency heal pass (``-a heal=1``) recover it later.
+        """
+        body = response.body or b""
+        if len(body) < _MIN_BODY_BYTES:
+            return f"empty/short body ({len(body)} bytes)", True
+        if _LOT_URL_RE.search(original) and b"data-lf-microdata" not in body:
+            return "lot page missing lot microdata", False
+        return None
+
     def process_response(self, request: Request, response, spider):
         original = request.meta.get("_unlocker_url")
         if not original:
@@ -221,6 +252,32 @@ class BrightDataUnlockerMiddleware:
                 "Web Unlocker returned HTTP %s for %s", response.status, original
             )
             return response
+
+        # A 200 with no usable content must never be stored as a (hollow) page.
+        # Transient empties are retried; a stripped/cloaked lot page is dropped
+        # outright (the heal pass recovers it at low concurrency).
+        bad = self._bad_body_reason(response, original)
+        if bad is not None:
+            reason, retryable = bad
+            if retryable:
+                retry_req = get_retry_request(
+                    request, spider=spider, reason=f"unlocker bad 200: {reason}"
+                )
+                if retry_req is not None:
+                    return retry_req
+                spider.logger.warning(
+                    "Web Unlocker exhausted retries for %s (%s); dropping.",
+                    original,
+                    reason,
+                )
+            else:
+                spider.logger.warning(
+                    "Web Unlocker bad 200 for %s (%s); dropping "
+                    "(run -a heal=1 at low concurrency to recover).",
+                    original,
+                    reason,
+                )
+            raise IgnoreRequest(f"Web Unlocker bad 200 for {original}: {reason}")
 
         # The API replies with the raw page but its own Content-Type (often not
         # text/html), so Scrapy may build a plain/Text response on which link

@@ -2,6 +2,8 @@ import json
 import logging
 from types import SimpleNamespace
 
+import pytest
+from scrapy.exceptions import IgnoreRequest
 from scrapy.http import HtmlResponse, Request, TextResponse
 from scrapy.settings import Settings
 
@@ -20,6 +22,26 @@ def _spider(unlocker_zone=None, proxy_country=None):
         ),
         logger=logging.getLogger("test"),
     )
+
+
+def _spider_with_crawler(retry_times=2):
+    """A spider whose crawler exposes the settings/stats that get_retry_request
+    reads when the Unlocker middleware retries a bad 200."""
+    spider = _spider()
+    spider.crawler = SimpleNamespace(
+        settings=Settings({"RETRY_TIMES": retry_times}),
+        stats=SimpleNamespace(inc_value=lambda *a, **k: None),
+    )
+    return spider
+
+
+# A body large enough to clear the middleware's minimum-size gate (~500 bytes),
+# so size-based tests exercise URL restoration rather than the bad-body retry.
+_GOOD_BODY = (
+    b"<html><head><meta property='og:url' content='x'>"
+    + b"<!-- pad -->" * 60
+    + b"</head><body>ok</body></html>"
+)
 
 
 def test_build_brightdata_proxy_url_with_country():
@@ -185,11 +207,65 @@ def test_unlocker_restores_original_url_on_response():
     )
     response = HtmlResponse(
         url="https://api.brightdata.com/request",
-        body=b"<html><meta property='og:url' content='x'></html>",
+        body=_GOOD_BODY,
         encoding="utf-8",
     )
     restored = middleware.process_response(request, response, _spider())
     assert restored.url == original
+
+
+def test_unlocker_retries_empty_body_200():
+    """A 200 with an empty/truncated body is a transient Unlocker failure: it
+    must be retried (re-issued) rather than stored as a hollow page."""
+    middleware = BrightDataUnlockerMiddleware(api_token="tok")
+    original = "https://www.litfund.ru/auction/716/90/"
+    request = Request(
+        "https://api.brightdata.com/request", meta={"_unlocker_url": original}
+    )
+    response = HtmlResponse(
+        url="https://api.brightdata.com/request", body=b"", encoding="utf-8"
+    )
+    result = middleware.process_response(request, response, _spider_with_crawler())
+    assert isinstance(result, Request)
+    assert result.meta["retry_times"] == 1
+
+
+def test_unlocker_drops_lot_page_without_microdata_without_retry():
+    """A full 200 lot page that lacks lot microdata is the Unlocker degrading
+    under concurrency (or a cloaked/removed lot). It must be dropped immediately
+    (no retry, which would just multiply billed calls); the low-concurrency heal
+    pass recovers it instead."""
+    middleware = BrightDataUnlockerMiddleware(api_token="tok")
+    original = "https://www.litfund.ru/auction/716/90/"
+    request = Request(
+        "https://api.brightdata.com/request", meta={"_unlocker_url": original}
+    )
+    body = b"<html><head><meta property='og:url' content='x'></head><body>"
+    body += b"<div class='tm-product-card'>other</div>" * 30
+    body += b"</body></html>"
+    response = HtmlResponse(
+        url="https://api.brightdata.com/request", body=body, encoding="utf-8"
+    )
+    # retry_times=0 (fresh request): a retryable failure WOULD return a Request,
+    # so raising here proves the missing-microdata case is not retried.
+    with pytest.raises(IgnoreRequest):
+        middleware.process_response(request, response, _spider_with_crawler())
+
+
+def test_unlocker_drops_bad_200_after_retries_exhausted():
+    """Once retries are exhausted, a persistently bad 200 (e.g. a genuinely
+    removed lot) is dropped via IgnoreRequest so it never lands in raw_items."""
+    middleware = BrightDataUnlockerMiddleware(api_token="tok")
+    original = "https://www.litfund.ru/auction/716/90/"
+    request = Request(
+        "https://api.brightdata.com/request",
+        meta={"_unlocker_url": original, "retry_times": 5},
+    )
+    response = HtmlResponse(
+        url="https://api.brightdata.com/request", body=b"", encoding="utf-8"
+    )
+    with pytest.raises(IgnoreRequest):
+        middleware.process_response(request, response, _spider_with_crawler())
 
 
 def test_unlocker_leaves_error_response_uncoerced():

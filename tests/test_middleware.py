@@ -1,20 +1,24 @@
 import json
+import logging
 from types import SimpleNamespace
 
-from scrapy.http import HtmlResponse, Request
+from scrapy.http import HtmlResponse, Request, TextResponse
+from scrapy.settings import Settings
 
 from scraper.middlewares import (
     BrightDataProxyMiddleware,
     BrightDataUnlockerMiddleware,
     build_brightdata_proxy_url,
 )
+from scraper.spiders.generic import DEFAULT_UNLOCKER_CONCURRENCY, GenericSiteSpider
 
 
 def _spider(unlocker_zone=None, proxy_country=None):
     return SimpleNamespace(
         site_config=SimpleNamespace(
             unlocker_zone=unlocker_zone, proxy_country=proxy_country
-        )
+        ),
+        logger=logging.getLogger("test"),
     )
 
 
@@ -186,3 +190,66 @@ def test_unlocker_restores_original_url_on_response():
     )
     restored = middleware.process_response(request, response, _spider())
     assert restored.url == original
+
+
+def test_unlocker_leaves_error_response_uncoerced():
+    """A non-2xx Unlocker reply is an API/upstream error, not a page: it must
+    keep its status (so RetryMiddleware/HttpError act on it) and not be dressed
+    up as a successful HtmlResponse pointing at the target url."""
+    middleware = BrightDataUnlockerMiddleware(api_token="tok")
+    original = "https://www.litfund.ru/auction/737/"
+    request = Request(
+        "https://api.brightdata.com/request", meta={"_unlocker_url": original}
+    )
+    response = TextResponse(
+        url="https://api.brightdata.com/request",
+        status=503,
+        body=b"upstream error",
+        encoding="utf-8",
+    )
+    result = middleware.process_response(request, response, _spider())
+    assert result.status == 503
+    assert not isinstance(result, HtmlResponse)
+    assert result.url == "https://api.brightdata.com/request"
+
+
+def test_unlocker_settings_drop_404_and_disable_throttle():
+    result = GenericSiteSpider._unlocker_settings(Settings())
+    assert 404 not in result["RETRY_HTTP_CODES"]
+    assert result["RETRY_TIMES"] == 2
+    assert result["AUTOTHROTTLE_ENABLED"] is False
+    assert result["DOWNLOAD_DELAY"] == 0
+    assert result["CONCURRENT_REQUESTS"] == DEFAULT_UNLOCKER_CONCURRENCY
+    assert result["CONCURRENT_REQUESTS_PER_DOMAIN"] == DEFAULT_UNLOCKER_CONCURRENCY
+    assert result["DOWNLOAD_TIMEOUT"] >= 60
+
+
+def test_unlocker_settings_concurrency_override():
+    settings = Settings({"BRIGHTDATA_UNLOCKER_CONCURRENCY": 256})
+    result = GenericSiteSpider._unlocker_settings(settings)
+    assert result["CONCURRENT_REQUESTS"] == 256
+    assert result["CONCURRENT_REQUESTS_PER_DOMAIN"] == 256
+
+
+def test_unlocker_active_requires_both_token_and_zone():
+    with_zone = _spider(unlocker_zone="litfund_unlocker")
+    without_zone = _spider(unlocker_zone=None)
+
+    assert (
+        GenericSiteSpider._unlocker_active(
+            with_zone, Settings({"BRIGHTDATA_API_TOKEN": "tok"})
+        )
+        is True
+    )
+    assert (
+        GenericSiteSpider._unlocker_active(
+            with_zone, Settings({"BRIGHTDATA_API_TOKEN": ""})
+        )
+        is False
+    )
+    assert (
+        GenericSiteSpider._unlocker_active(
+            without_zone, Settings({"BRIGHTDATA_API_TOKEN": "tok"})
+        )
+        is False
+    )

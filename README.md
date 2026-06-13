@@ -66,6 +66,25 @@ For production HTTPS targets, install the [Bright Data SSL certificate](https://
 
 Per-site proxy overrides are supported via `SiteConfig.proxy_zone` / `proxy_country`.
 
+### Web Unlocker (anti-bot, billed per request)
+
+Some sites (e.g. litfund) cloak the residential pool with 404s regardless of exit IP. For those, set a `SiteConfig.unlocker_zone` and provide an API token to route requests through the [Bright Data Web Unlocker](https://docs.brightdata.com/scraping-automation/web-unlocker/introduction), which solves anti-bot server-side:
+
+```env
+BRIGHTDATA_API_TOKEN=your_api_token
+```
+
+When the token is set, sites with an `unlocker_zone` are rewritten to `POST api.brightdata.com/request`. Because every call is **billed per request** and traffic no longer goes directly to the target host, `GenericSiteSpider` automatically retunes itself in this mode (see `_unlocker_settings`):
+
+- Drops `404` from retryable codes and lowers `RETRY_TIMES` — a 404 is genuine here (no exit-IP cloaking), so retrying it just re-bills a missing page.
+- Disables autothrottle and the per-domain cap (all traffic shares `api.brightdata.com`; autothrottle would misread the slow server-side solve latency as load).
+- Raises concurrency to `BRIGHTDATA_UNLOCKER_CONCURRENCY` (default 128) since PAYG Unlocker concurrency is unlimited; tune against local resources and cost.
+
+To keep spend down when the Unlocker is active:
+
+- Prefer the bounded `litfund_auctions -a auctions=... -a skip_existing=1` (or `python -m scraper.litfund --latest N`, which skips stored auctions/lots by default) over the unbounded full-archive `generic` crawl.
+- Set `JOBDIR=<dir>` (or `-s JOBDIR=<dir>`) so an interrupted crawl resumes instead of refetching — and re-paying for — pages already requested.
+
 ## ClickHouse setup
 
 Start ClickHouse locally:

@@ -210,6 +210,18 @@ class BrightDataUnlockerMiddleware:
         original = request.meta.get("_unlocker_url")
         if not original:
             return response
+
+        if not 200 <= response.status < 300:
+            # A non-2xx is an Unlocker API failure (bad zone, quota, auth) or a
+            # genuine upstream error - not a page. Leave it untouched (and at its
+            # real status) so RetryMiddleware handles retryable codes and
+            # HttpErrorMiddleware drops the rest, instead of dressing the error
+            # body up as a successful page and storing it in raw_items.
+            spider.logger.warning(
+                "Web Unlocker returned HTTP %s for %s", response.status, original
+            )
+            return response
+
         # The API replies with the raw page but its own Content-Type (often not
         # text/html), so Scrapy may build a plain/Text response on which link
         # extraction is a no-op. Restore the real URL and coerce to HtmlResponse

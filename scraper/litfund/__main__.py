@@ -53,7 +53,10 @@ def _fetch(url: str) -> str:
         payload, headers = build_unlocker_request(
             api_token=api_token, zone=zone, target_url=url
         )
-        response = requests.post(api_url, json=payload, headers=headers, timeout=60)
+        # The Unlocker solves anti-bot server-side and can be slow; give it the
+        # same headroom as the crawl's DOWNLOAD_TIMEOUT rather than the 60s used
+        # for direct residential fetches below.
+        response = requests.post(api_url, json=payload, headers=headers, timeout=120)
         response.raise_for_status()
         return response.text
 

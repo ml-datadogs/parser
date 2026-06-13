@@ -56,6 +56,18 @@ BRIGHTDATA_API_TOKEN = os.getenv("BRIGHTDATA_API_TOKEN", "")
 BRIGHTDATA_API_URL = os.getenv(
     "BRIGHTDATA_API_URL", "https://api.brightdata.com/request"
 )
+# In-flight request cap applied automatically when a site routes through the Web
+# Unlocker (see GenericSiteSpider._unlocker_settings). PAYG Unlocker concurrency
+# is unlimited, so this is bound by local resources and cost, not a zone limit.
+BRIGHTDATA_UNLOCKER_CONCURRENCY = int(
+    os.getenv("BRIGHTDATA_UNLOCKER_CONCURRENCY", "128")
+)
+
+# Persistent request queue. Empty (default) disables it; set to a directory to
+# make a crawl resumable so an interrupted run does not refetch (and, under the
+# Unlocker, re-pay for) pages already requested. Also settable per-run with
+# `-s JOBDIR=...`.
+JOBDIR = os.getenv("JOBDIR", "")
 
 # ClickHouse
 CLICKHOUSE_HOST = os.getenv("CLICKHOUSE_HOST", "")

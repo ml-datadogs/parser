@@ -60,10 +60,25 @@ Catalog pages are walked via `?page=N` links extracted from `ul.uk-pagination`.
 
 ## Proxy / anti-bot
 
-Russian-language site; routed through Bright Data with `proxy_country="ru"` and
-`download_delay=1.0` to stay polite across the large archive (~750+ auctions,
-~220k lots). Validate on a single auction (e.g. `388`) before crawling the full
-archive.
+Russian-language site; routed through Bright Data with `proxy_country="ru"`. The
+residential pool cloaks valid pages as 404s regardless of exit IP, so set
+`BRIGHTDATA_API_TOKEN` to route through the Web Unlocker (`unlocker_zone=
+"litfund_unlocker"`), which solves anti-bot server-side. Without a token it
+falls back to the residential proxy (`download_delay=0.25`, per-retry IP
+rotation, 404 treated as retryable). Validate on a single auction (e.g. `388`)
+before crawling the full archive.
+
+### Cost when the Unlocker is active
+
+Every Unlocker request is billed, so `GenericSiteSpider` retunes automatically:
+404 is no longer retried, autothrottle/per-domain caps are off, and concurrency
+rises to `BRIGHTDATA_UNLOCKER_CONCURRENCY` (default 128). To avoid re-paying for
+pages:
+
+- Prefer the bounded `litfund_auctions ... -a skip_existing=1` or
+  `python -m scraper.litfund --latest N` (skips stored auctions/lots by default)
+  over the unbounded `generic` full-archive crawl.
+- Set `JOBDIR=<dir>` so an interrupted crawl resumes instead of refetching.
 
 ## Crawl entry
 
@@ -71,10 +86,11 @@ archive.
 scrapy crawl generic -a site=litfund
 ```
 
-Scoped re-fetch of specific auctions (catalog pages + lots):
+Scoped re-fetch of specific auctions (catalog pages + lots), skipping lots
+already stored (recommended under the billed Unlocker):
 
 ```bash
-scrapy crawl litfund_auctions -a auctions=747,752
+scrapy crawl litfund_auctions -a auctions=747,752 -a skip_existing=1
 ```
 
 ## Latest-N refresh

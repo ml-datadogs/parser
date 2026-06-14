@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "mcp-toolbox": {
+      "url": "https://toolbox.mlshitcheatsheet.ru/mcp/clickhouse-execute",
+      "headers": {
+        "Authorization": "Basic dG9vbGJveDpFRThKTXBuaWp6MlVBdzJHVlpsNEI="
+      }
+    }
+  }
+}
